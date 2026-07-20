@@ -1,0 +1,6 @@
+/target/
+.mimocode/
+*.swp
+*.swo
+*~
+.DS_Store

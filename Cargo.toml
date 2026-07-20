@@ -1,0 +1,15 @@
+[package]
+name = "ahrs-reader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serialport = "4"
+clap = { version = "4", features = ["derive"] }
+byteorder = "1"
+crossbeam-channel = "0.5"
+anyhow = "1"
+nalgebra = "0.33"
+eframe = "0.31"
+egui = "0.31"
+egui_plot = "0.31"
