@@ -94,3 +94,54 @@ impl Params {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_params_produce_identity_matrix() {
+        let p = Params::default();
+        let m = p.to_soft_iron();
+        assert!((m[(0, 0)] - 1.0).abs() < f32::EPSILON);
+        assert!((m[(1, 1)] - 1.0).abs() < f32::EPSILON);
+        assert!((m[(2, 2)] - 1.0).abs() < f32::EPSILON);
+        assert!(m[(0, 1)].abs() < f32::EPSILON);
+        assert!(m[(0, 2)].abs() < f32::EPSILON);
+        assert!(m[(1, 2)].abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn to_soft_iron_is_symmetric() {
+        let p = Params::new([1.0, 2.0, 3.0, 0.1, 0.2, 0.3], [0.0; 3], 1.0);
+        let m = p.to_soft_iron();
+        assert!((m[(0, 1)] - m[(1, 0)]).abs() < f32::EPSILON);
+        assert!((m[(0, 2)] - m[(2, 0)]).abs() < f32::EPSILON);
+        assert!((m[(1, 2)] - m[(2, 1)]).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn to_hard_iron_matches_constructor() {
+        let p = Params::new([1.0; 6], [1.5, 2.5, 3.5], 1.0);
+        let hi = p.to_hard_iron();
+        assert!((hi.x - 1.5).abs() < f32::EPSILON);
+        assert!((hi.y - 2.5).abs() < f32::EPSILON);
+        assert!((hi.z - 3.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sphere_param_comparison_within_threshold() {
+        let a = Params::new([1.0; 6], [1.0, 2.0, 3.0], 5.0);
+        let b = Params::new([1.0; 6], [1.001, 2.001, 3.001], 5.001);
+        assert!(a.is_delta_params_less_other_sphere(&b, 0.01));
+        assert!(!a.is_delta_params_less_other_sphere(&b, 0.0001));
+    }
+
+    #[test]
+    fn ellipsoid_param_comparison_within_threshold() {
+        let a = Params::new([1.0, 2.0, 3.0, 0.1, 0.2, 0.3], [1.0, 2.0, 3.0], 1.0);
+        let b = Params::new([1.001, 2.001, 3.001, 0.101, 0.201, 0.301], [1.001, 2.001, 3.001], 1.0);
+        assert!(a.is_delta_params_less_other_ellipsoid(&b, 0.01));
+        assert!(!a.is_delta_params_less_other_ellipsoid(&b, 0.0001));
+    }
+}

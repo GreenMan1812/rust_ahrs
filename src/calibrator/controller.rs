@@ -15,7 +15,6 @@ pub struct CalibrationController {
     convergence_epsilon: f32,
     stable_count: usize,
     required_stable: usize,
-    last_fitting_state: f32,
     data_logger: DataLogger,
 }
 
@@ -31,7 +30,6 @@ impl CalibrationController {
         let classifier = Box::new(AdaptiveThreshold::new(bound * 0.05, sample_count));
         let data_logger = DataLogger::new(sample_count, bound, classifier);
         let calibrator = Callibrator::new(lambda);
-        let last_fitting_state = f32::INFINITY;
         Self {
             calibrator,
             state: CalibratorState::NotStarted,
@@ -41,7 +39,6 @@ impl CalibrationController {
             convergence_epsilon,
             stable_count: 0,
             required_stable: 5,
-            last_fitting_state,
             data_logger,
         }
     }
@@ -66,16 +63,28 @@ impl CalibrationController {
                 let prev = self.calibrator.fitness;
                 self.calibrator.step_sphere_fit(&self.data_logger.uncalibrated_data);
                 self.sphere_iterations += 1;
-                if self.sphere_iterations >= self.max_iterations || (self.calibrator.fitness - prev).abs() < self.convergence_epsilon {
+                if (self.calibrator.fitness - prev).abs() < self.convergence_epsilon {
+                    self.stable_count += 1;
+                } else {
+                    self.stable_count = 0;
+                }
+                if self.sphere_iterations >= self.max_iterations || self.stable_count >= self.required_stable {
                     self.state = CalibratorState::EllipsoidFittingStep;
+                    self.stable_count = 0;
                 }
             }
             CalibratorState::EllipsoidFittingStep => {
                 let prev = self.calibrator.fitness;
                 self.calibrator.step_ellipse_fit(&self.data_logger.uncalibrated_data);
                 self.ellipsoid_iterations += 1;
-                if self.ellipsoid_iterations >= self.max_iterations || (self.calibrator.fitness - prev).abs() < self.convergence_epsilon {
+                if (self.calibrator.fitness - prev).abs() < self.convergence_epsilon {
+                    self.stable_count += 1;
+                } else {
+                    self.stable_count = 0;
+                }
+                if self.ellipsoid_iterations >= self.max_iterations || self.stable_count >= self.required_stable {
                     self.state = CalibratorState::FittingComplete;
+                    self.stable_count = 0;
                 }
             }
             CalibratorState::CalibrationFailed => {
@@ -87,6 +96,11 @@ impl CalibrationController {
                 self.state = CalibratorState::NotStarted;
                 self.data_logger.clear_data();
                 return true;
+            }
+            CalibratorState::BadOrientations => {
+                self.state = CalibratorState::NotStarted;
+                self.data_logger.clear_data();
+                return false;
             }
         }
         return false;

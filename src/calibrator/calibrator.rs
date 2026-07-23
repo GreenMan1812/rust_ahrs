@@ -26,23 +26,23 @@ impl Callibrator {
         }
         sum / samples.len() as f32
     }
-    fn calc_sphere_jacobian(&self, data: &Vector3<f32>, params: &Params) -> Vec<f32> {
+    fn calc_sphere_jacobian(&self, data: &Vector3<f32>, params: &Params) -> [f32; 4] {
 
         let si = params.to_soft_iron();
         let hi = params.to_hard_iron();
         let w = si * (data - hi);
         let r = w.norm();
         if r < f32::EPSILON {
-            return vec![1.0, 0.0, 0.0, 0.0];
+            return [1.0, 0.0, 0.0, 0.0];
         }
-        vec![
+        [
             1.0f32,
             si.column(0).dot(&w) / r,
             si.column(1).dot(&w) / r,
             si.column(2).dot(&w) / r,
         ]
     }
-    pub fn calc_ellipsoid_jacobian(&self, data: &Vector3<f32>, params: &Params) -> Vec<f32> {
+    pub fn calc_ellipsoid_jacobian(&self, data: &Vector3<f32>, params: &Params) -> [f32; 9] {
         let y = data - params.to_hard_iron();
 
         let m = params.to_soft_iron();
@@ -53,7 +53,7 @@ impl Callibrator {
 
         // Защита от деления на ноль
         if d < f32::EPSILON {
-            return vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+            return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
         }
 
         let inv_d = 1.0 / d;
@@ -82,7 +82,7 @@ impl Callibrator {
         let doff_xz = -(y.z * A + y.x * C) * inv_d;
         let doff_yz = -(y.z * B + y.y * C) * inv_d;
 
-        vec![
+        [
             dbx, dby, dbz,
             ddiag_x, ddiag_y, ddiag_z,
             doff_xy, doff_xz, doff_yz,
@@ -242,5 +242,237 @@ impl Callibrator {
         }
         self.calibration_state = CalibratorState::EllipsoidFittingStep;
         return self.calibration_state;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Генерирует точки на сфере с заданным центром и радиусом
+    fn generate_sphere_samples(center: Vector3<f32>, radius: f32, n: usize) -> Vec<Vector3<f32>> {
+        let mut samples = Vec::with_capacity(n);
+        for i in 0..n {
+            let theta = 2.0 * std::f32::consts::PI * (i as f32) / (n as f32);
+            let phi = std::f32::consts::PI * (i as f32) / (n as f32);
+            let x = radius * phi.sin() * theta.cos() + center.x;
+            let y = radius * phi.sin() * theta.sin() + center.y;
+            let z = radius * phi.cos() + center.z;
+            samples.push(Vector3::new(x, y, z));
+        }
+        samples
+    }
+
+    /// Генерирует точки на эллипсоиде (растянутая сфера)
+    fn generate_ellipsoid_samples(
+        center: Vector3<f32>,
+        radii: Vector3<f32>,
+        n: usize,
+    ) -> Vec<Vector3<f32>> {
+        let mut samples = Vec::with_capacity(n);
+        for i in 0..n {
+            let theta = 2.0 * std::f32::consts::PI * (i as f32) / (n as f32);
+            let phi = std::f32::consts::PI * (i as f32) / (n as f32);
+            let x = radii.x * phi.sin() * theta.cos() + center.x;
+            let y = radii.y * phi.sin() * theta.sin() + center.y;
+            let z = radii.z * phi.cos() + center.z;
+            samples.push(Vector3::new(x, y, z));
+        }
+        samples
+    }
+
+    // ── calibrator state ──
+
+    #[test]
+    fn sphere_fit_empty_samples_returns_not_started() {
+        let mut cal = Callibrator::new(1e-3);
+        let state = cal.step_sphere_fit(&vec![]);
+        assert_eq!(state, CalibratorState::NotStarted);
+    }
+
+    #[test]
+    fn ellipse_fit_empty_samples_returns_not_started() {
+        let mut cal = Callibrator::new(1e-3);
+        let state = cal.step_ellipse_fit(&vec![]);
+        assert_eq!(state, CalibratorState::NotStarted);
+    }
+
+    #[test]
+    fn new_calibrator_has_default_fitness() {
+        let cal = Callibrator::new(1e-3);
+        assert_eq!(cal.fitness, 1e30);
+        assert_eq!(cal.calibration_state, CalibratorState::NotStarted);
+    }
+
+    // ── error function ──
+
+    #[test]
+    fn calc_error_is_zero_on_perfect_sphere() {
+        let p = Params::new([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], [0.0; 3], 10.0);
+        let cal = Callibrator::new(1e-3);
+        let point = Vector3::new(10.0, 0.0, 0.0);
+        let err = cal.calc_error(&point, &p);
+        assert!(err.abs() < 1e-5, "error = {}", err);
+    }
+
+    #[test]
+    fn calc_error_positive_inside_sphere() {
+        let p = Params::new([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], [0.0; 3], 10.0);
+        let cal = Callibrator::new(1e-3);
+        let point = Vector3::new(5.0, 0.0, 0.0);
+        let err = cal.calc_error(&point, &p);
+        assert!(err > 0.0, "error should be positive inside sphere, got {}", err);
+    }
+
+    #[test]
+    fn calc_error_negative_outside_sphere() {
+        let p = Params::new([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], [0.0; 3], 10.0);
+        let cal = Callibrator::new(1e-3);
+        let point = Vector3::new(15.0, 0.0, 0.0);
+        let err = cal.calc_error(&point, &p);
+        assert!(err < 0.0, "error should be negative outside sphere, got {}", err);
+    }
+
+    #[test]
+    fn calc_error_with_hard_iron_offset() {
+        let p = Params::new([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], [5.0, 0.0, 0.0], 10.0);
+        let cal = Callibrator::new(1e-3);
+        // data=(15,0,0), hard_iron=(5,0,0) → data-hi=(10,0,0) → norm=10 → error=0
+        let point = Vector3::new(15.0, 0.0, 0.0);
+        let err = cal.calc_error(&point, &p);
+        assert!(err.abs() < 1e-5, "error = {}", err);
+    }
+
+    // ── jacobians ──
+
+    #[test]
+    fn sphere_jacobian_has_correct_dim() {
+        let cal = Callibrator::new(1e-3);
+        let p = Params::default();
+        let data = Vector3::new(1.0, 2.0, 3.0);
+        let j = cal.calc_sphere_jacobian(&data, &p);
+        assert_eq!(j.len(), 4);
+    }
+
+    #[test]
+    fn sphere_jacobian_first_element_is_one() {
+        let cal = Callibrator::new(1e-3);
+        let p = Params::default();
+        let data = Vector3::new(1.0, 2.0, 3.0);
+        let j = cal.calc_sphere_jacobian(&data, &p);
+        assert!((j[0] - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sphere_jacobian_at_zero_returns_fallback() {
+        let cal = Callibrator::new(1e-3);
+        let p = Params::default();
+        let data = Vector3::new(0.0, 0.0, 0.0);
+        let j = cal.calc_sphere_jacobian(&data, &p);
+        // data=0, center=0, r=0 → fallback
+        assert_eq!(j, [1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn ellipsoid_jacobian_has_correct_dim() {
+        let cal = Callibrator::new(1e-3);
+        let p = Params::default();
+        let data = Vector3::new(1.0, 2.0, 3.0);
+        let j = cal.calc_ellipsoid_jacobian(&data, &p);
+        assert_eq!(j.len(), 9);
+    }
+
+    #[test]
+    fn ellipsoid_jacobian_at_center_returns_fallback() {
+        let cal = Callibrator::new(1e-3);
+        let p = Params::new([1.0; 6], [5.0, 5.0, 5.0], 1.0);
+        let data = Vector3::new(5.0, 5.0, 5.0); // data == center
+        let j = cal.calc_ellipsoid_jacobian(&data, &p);
+        // v = M * (data - center) = 0 → fallback
+        assert_eq!(j, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+
+    // ── sphere fitting convergence ──
+
+    #[test]
+    fn sphere_fit_converges_to_known_center_and_radius() {
+        let center = Vector3::new(10.0, -20.0, 5.0);
+        let radius = 50.0;
+        let samples = generate_sphere_samples(center, radius, 200);
+
+        let mut cal = Callibrator::new(1e-3);
+        for _ in 0..500 {
+            cal.step_sphere_fit(&samples);
+        }
+
+        let err_cx = (cal.params.c_x - center.x).abs();
+        let err_cy = (cal.params.c_y - center.y).abs();
+        let err_cz = (cal.params.c_z - center.z).abs();
+        let err_r = (cal.params.radius - radius).abs();
+
+        assert!(err_cx < 1.0, "c_x: got {}, want ~{}", cal.params.c_x, center.x);
+        assert!(err_cy < 1.0, "c_y: got {}, want ~{}", cal.params.c_y, center.y);
+        assert!(err_cz < 1.0, "c_z: got {}, want ~{}", cal.params.c_z, center.z);
+        assert!(err_r < 2.0, "radius: got {}, want ~{}", cal.params.radius, radius);
+    }
+
+    #[test]
+    fn sphere_fit_fitness_decreases() {
+        let center = Vector3::new(5.0, -10.0, 3.0);
+        let radius = 30.0;
+        let samples = generate_sphere_samples(center, radius, 100);
+
+        let mut cal = Callibrator::new(1e-3);
+        let initial_fitness = cal.fitness;
+        for _ in 0..100 {
+            cal.step_sphere_fit(&samples);
+        }
+        assert!(cal.fitness < initial_fitness, "fitness should decrease: {} -> {}", initial_fitness, cal.fitness);
+    }
+
+    // ── ellipsoid fitting ──
+
+    #[test]
+    fn ellipse_fit_on_stretched_sphere() {
+        let center = Vector3::new(10.0, 20.0, -5.0);
+        let radii = Vector3::new(50.0, 30.0, 40.0);
+        let samples = generate_ellipsoid_samples(center, radii, 300);
+
+        // Сначала sphere fit для начального приближения
+        let mut cal = Callibrator::new(1e-3);
+        for _ in 0..200 {
+            cal.step_sphere_fit(&samples);
+        }
+        // Затем ellipsoid fit
+        for _ in 0..500 {
+            cal.step_ellipse_fit(&samples);
+        }
+
+        // Центр должен быть найден точно
+        let err_cx = (cal.params.c_x - center.x).abs();
+        let err_cy = (cal.params.c_y - center.y).abs();
+        let err_cz = (cal.params.c_z - center.z).abs();
+        assert!(err_cx < 2.0, "c_x: got {}", cal.params.c_x);
+        assert!(err_cy < 2.0, "c_y: got {}", cal.params.c_y);
+        assert!(err_cz < 2.0, "c_z: got {}", cal.params.c_z);
+    }
+
+    #[test]
+    fn ellipse_fit_preserves_sphere_convergence() {
+        let center = Vector3::new(0.0, 0.0, 0.0);
+        let radius = 100.0;
+        let samples = generate_sphere_samples(center, radius, 200);
+
+        let mut cal = Callibrator::new(1e-3);
+        for _ in 0..300 {
+            cal.step_sphere_fit(&samples);
+        }
+        let after_sphere = cal.fitness;
+
+        // Ellipsoid fit на сферических данных не должен ухудшить результат
+        for _ in 0..200 {
+            cal.step_ellipse_fit(&samples);
+        }
+        assert!(cal.fitness <= after_sphere + 1e-6, "fitness worsened: {} -> {}", after_sphere, cal.fitness);
     }
 }
