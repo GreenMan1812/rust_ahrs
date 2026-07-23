@@ -1,4 +1,4 @@
-mod callibrator;
+mod calibrator;
 mod packet;
 mod processor;
 mod reader;

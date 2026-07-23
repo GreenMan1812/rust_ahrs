@@ -1,6 +1,7 @@
 use nalgebra::{Matrix3, Vector3};
 
-struct Params {
+#[derive(Clone, Copy)]
+pub struct Params {
     pub diag_x: f32,
     pub diag_y: f32,
     pub diag_z: f32,
@@ -40,5 +41,56 @@ impl Params {
     }
     pub fn to_hard_iron(&self) -> Vector3<f32> {
         Vector3::new(self.c_x, self.c_y, self.c_z)
+    }
+    pub fn get_sphere_params(&self) -> [f32; 4] {
+        [self.c_x, self.c_y, self.c_z, self.radius]
+    }
+    pub fn get_ellipsoid_params(&self) -> [f32; 9] {
+        [self.c_x, self.c_y, self.c_z, self.diag_x, self.diag_y, self.diag_z, self.off_xy, self.off_xz, self.off_yz]
+    }
+    pub fn is_delta_params_less_other_sphere(&self, other: &Self, threshold: f32) -> bool {
+        if (self.c_x - other.c_x).abs() > threshold {
+            return false;
+        }
+        if (self.c_y - other.c_y).abs() > threshold {
+            return false;
+        }
+        if (self.c_z - other.c_z).abs() > threshold {
+            return false;
+        }
+        if (self.radius - other.radius).abs() > threshold {
+            return false;
+        }
+        true
+    }
+    pub fn is_delta_params_less_other_ellipsoid(&self, other: &Self, threshold: f32) -> bool {
+        if (self.c_x - other.c_x).abs() > threshold {
+            return false;
+        }
+        if (self.c_y - other.c_y).abs() > threshold {
+            return false;
+        }
+        if (self.c_z - other.c_z).abs() > threshold {
+            return false;
+        }
+        if (self.diag_x - other.diag_x).abs() > threshold {
+            return false;
+        }
+        if (self.diag_y - other.diag_y).abs() > threshold {
+            return false;
+        }
+        if (self.diag_z - other.diag_z).abs() > threshold {
+            return false;
+        }
+        if (self.off_xy - other.off_xy).abs() > threshold {
+            return false;
+        }
+        if (self.off_xz - other.off_xz).abs() > threshold {
+            return false;
+        }
+        if (self.off_yz - other.off_yz).abs() > threshold {
+            return false;
+        }
+        true
     }
 }

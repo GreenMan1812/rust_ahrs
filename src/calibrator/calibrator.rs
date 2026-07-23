@@ -1,47 +1,40 @@
-use nalgebra::{Matrix3, Vector3};
-use std::{f32::{NAN, consts::PI}, hash};
-// mod params;
+use nalgebra::{Vector3, SVector, SMatrix};
 use super::params::Params;
-// mod datalogger;
-use super::datalogger::DataLogger;
 use super::calibrator_state::CalibratorState;
-use super::classifier::Classifier;
-// use super::
-//
-//
+
 pub struct Callibrator {
     pub params: Params,
-    fitness: f32,
+    pub fitness: f32,
+    calibration_state: CalibratorState,
+    lambda: f32,
 }
 
 impl Callibrator {
-    pub fn new() -> Self {
+    pub fn new(lambda: f32) -> Self {
         Self {
             params: Params::default(),
-            fitness: NAN,
+            fitness: 1e30,
+            calibration_state: CalibratorState::NotStarted,
+            lambda,
         }
     }
 
-    fn calc_residular(&self, data: &Vector3<f32>) -> f32 {
-        let si = self.params.to_soft_iron();
-        let hi = self.params.to_hard_iron();
-        let w = si * (data - hi);
-        let r = w.norm();
-        return self.params.expected_radius - r;
-    }
-    fn calc_mse(&self) -> f32 {
+    fn calc_mse(&self, params: &Params, samples: &Vec<Vector3<f32>>) -> f32 {
         let mut sum = 0.0f32;
-        for sample in &self.data_for_calibration {
-            sum += self.calc_residular(sample).powi(2);
+        for sample in samples {
+            sum += self.calc_error(sample, params).powi(2);
         }
-        sum / self.data_for_calibration.len() as f32
+        sum / samples.len() as f32
     }
-    fn calc_sphere_jacobian(&self, data: &Vector3<f32>) -> Vec<f32> {
+    fn calc_sphere_jacobian(&self, data: &Vector3<f32>, params: &Params) -> Vec<f32> {
 
-        let si = self.params.to_soft_iron();
-        let hi = self.params.to_hard_iron();
+        let si = params.to_soft_iron();
+        let hi = params.to_hard_iron();
         let w = si * (data - hi);
         let r = w.norm();
+        if r < f32::EPSILON {
+            return vec![1.0, 0.0, 0.0, 0.0];
+        }
         vec![
             1.0f32,
             si.column(0).dot(&w) / r,
@@ -49,10 +42,10 @@ impl Callibrator {
             si.column(2).dot(&w) / r,
         ]
     }
-    pub fn calc_ellipsoid_jacobian(&self, data: &Vector3<f32>) -> Vec<f32> {
-        let y = data - self.params.to_hard_iron();
+    pub fn calc_ellipsoid_jacobian(&self, data: &Vector3<f32>, params: &Params) -> Vec<f32> {
+        let y = data - params.to_hard_iron();
 
-        let m = self.params.to_soft_iron();
+        let m = params.to_soft_iron();
 
         // v = M * y
         let v = m * y;
@@ -60,20 +53,18 @@ impl Callibrator {
 
         // Защита от деления на ноль
         if d < f32::EPSILON {
-            return vec![1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+            return vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
         }
 
         let inv_d = 1.0 / d;
         let (A, B, C) = (v.x, v.y, v.z);
 
-        // let [diag_x, diag_y, diag_z, off_xy, off_xz, off_yz] =[ self.params.diag_x, self.params.diag_y, self.params.diag_z, self.params.off_xy, self.params.off_xz, self.params.off_yz];
-        let diag_x = self.params.diag_x;
-        let diag_y = self.params.diag_y;
-        let diag_z = self.params.diag_z;
-        let off_xy = self.params.off_xy;
-        let off_xz = self.params.off_xz;
-        let off_yz = self.params.off_yz;
-        let dr = 1.0;
+        let diag_x = params.diag_x;
+        let diag_y = params.diag_y;
+        let diag_z = params.diag_z;
+        let off_xy = params.off_xy;
+        let off_xz = params.off_xz;
+        let off_yz = params.off_yz;
 
         // ---- Производные по центру (b) ----
         // Так как b = -offset, то df/db = - df/doffset = (M^T * v) / d
@@ -97,23 +88,159 @@ impl Callibrator {
             doff_xy, doff_xz, doff_yz,
         ]
     }
-    fn calc_error(&self, data: &Vector3<f32>) -> f32 {
-        let m = self.soft_iron_params_to_matrix();
-        let w = m*(data - self.hard_iron_correction);
-        let d = w.norm();
-        self.expected_radius - d
+    fn calc_error(&self, data: &Vector3<f32>, params: &Params) -> f32 {
+        let d = (params.to_soft_iron() * (data - params.to_hard_iron())).norm();
+        params.radius - d
     }
-    pub fn step_fit<F>(&mut self, jacobian: F) -> u32
-    where
-        F: Fn(&Vector3<f32>) -> Vec<f32>,
+    pub fn step_sphere_fit(&mut self, samples: &Vec<Vector3<f32>>) -> CalibratorState
     {
-
-        if self.data_for_calibration.len() == 0{
-            return -1;
+        if samples.len() == 0{
+            return CalibratorState::NotStarted;
         }
         let lma_damping = 10.0;
-        let mut last_fitness =  self.fitness;
-        let _params1_fit = self.
-        return -1;
+        let mut _params1_fit = self.params;
+        let mut _params2_fit = self.params;
+        let mut jtj1 = SMatrix::<f32, 4, 4>::zeros();
+        let mut jtj2 = SMatrix::<f32, 4, 4>::zeros();
+        let mut jfi =  SVector::<f32, 4>::zeros();
+
+        for data in samples {
+            let sphere_jacob = self.calc_sphere_jacobian(data, &_params1_fit);
+            let error = self.calc_error(data, &_params1_fit);
+
+            for i in 0..4 {
+                for j in 0..4 {
+                    jtj1[(i, j)] += sphere_jacob[i] * sphere_jacob[j];
+                    jtj2[(i, j)] += sphere_jacob[i] * sphere_jacob[j];
+                }
+                jfi[i] += sphere_jacob[i] * error;
+            }
+        }
+
+        for i in 0..4 {
+            jtj1[(i, i)] += self.lambda;
+            jtj2[(i, i)] += self.lambda / lma_damping;
+        }
+        let inv_jtj1 = match jtj1.try_inverse() {
+            Some(m) => m,
+            None => return CalibratorState::CalibrationFailed,
+        };
+        let inv_jtj2 = match jtj2.try_inverse() {
+            Some(m) => m,
+            None => return CalibratorState::CalibrationFailed,
+        };
+
+        let delta1 = -inv_jtj1 * jfi;
+        let delta2 = -inv_jtj2 * jfi;
+        _params1_fit.radius += delta1[0];
+        _params1_fit.c_x   += delta1[1];
+        _params1_fit.c_y   += delta1[2];
+        _params1_fit.c_z   += delta1[3];
+        _params2_fit.radius += delta2[0];
+        _params2_fit.c_x   += delta2[1];
+        _params2_fit.c_y   += delta2[2];
+        _params2_fit.c_z   += delta2[3];
+
+        let fit1 = self.calc_mse(&_params1_fit, samples);
+        let fit2 = self.calc_mse(&_params2_fit, samples);
+
+        let mut _fitness = self.fitness;
+        if fit1 > _fitness && fit2 > _fitness {
+            self.lambda *= lma_damping;
+        } else if fit2 < _fitness && fit2 < fit1 {
+            self.lambda /= lma_damping;
+            _params1_fit = _params2_fit;
+            _fitness = fit2;
+        } else if fit1 < _fitness {
+            _fitness = fit1;
+        }
+        if !_fitness.is_nan() && self.fitness > _fitness {
+            self.fitness = _fitness;
+            self.params = _params1_fit;
+        }
+        self.calibration_state = CalibratorState::SphereFittingStep;
+        return self.calibration_state;
+    }
+
+
+    pub fn step_ellipse_fit(&mut self, samples: &Vec<Vector3<f32>>) -> CalibratorState {
+        if samples.len() == 0{
+            return CalibratorState::NotStarted;
+        }
+        let lma_damping = 10.0;
+        let mut _params1_fit = self.params;
+        let mut _params2_fit = self.params;
+        let mut jtj1 = SMatrix::<f32, 9, 9>::zeros();
+        let mut jtj2 = SMatrix::<f32, 9, 9>::zeros();
+        let mut jfi =  SVector::<f32, 9>::zeros();
+
+        for data in samples {
+            let ellipse_jacob = self.calc_ellipsoid_jacobian(data, &_params1_fit);
+            let error = self.calc_error(data, &_params1_fit);
+
+            for i in 0..9 {
+                for j in 0..9 {
+                    jtj1[(i, j)] += ellipse_jacob[i] * ellipse_jacob[j];
+                    jtj2[(i, j)] += ellipse_jacob[i] * ellipse_jacob[j];
+                }
+                jfi[i] += ellipse_jacob[i] * error;
+            }
+        }
+
+        for i in 0..9 {
+            jtj1[(i, i)] += self.lambda;
+            jtj2[(i, i)] += self.lambda / lma_damping;
+        }
+        let inv_jtj1 = match jtj1.try_inverse() {
+            Some(m) => m,
+            None => return CalibratorState::CalibrationFailed,
+        };
+        let inv_jtj2 = match jtj2.try_inverse() {
+            Some(m) => m,
+            None => return CalibratorState::CalibrationFailed,
+        };
+
+        let delta1 = -inv_jtj1 * jfi;
+        let delta2 = -inv_jtj2 * jfi;
+
+        _params1_fit.c_x   += delta1[0];
+        _params1_fit.c_y   += delta1[1];
+        _params1_fit.c_z   += delta1[2];
+        _params1_fit.diag_x += delta1[3];
+        _params1_fit.diag_y += delta1[4];
+        _params1_fit.diag_z += delta1[5];
+        _params1_fit.off_xy += delta1[6];
+        _params1_fit.off_xz += delta1[7];
+        _params1_fit.off_yz += delta1[8];
+
+        _params2_fit.c_x   += delta2[0];
+        _params2_fit.c_y   += delta2[1];
+        _params2_fit.c_z   += delta2[2];
+        _params2_fit.diag_x += delta2[3];
+        _params2_fit.diag_y += delta2[4];
+        _params2_fit.diag_z += delta2[5];
+        _params2_fit.off_xy += delta2[6];
+        _params2_fit.off_xz += delta2[7];
+        _params2_fit.off_yz += delta2[8];
+
+        let fit1 = self.calc_mse(&_params1_fit, samples);
+        let fit2 = self.calc_mse(&_params2_fit, samples);
+
+        let mut _fitness = self.fitness;
+        if fit1 > _fitness && fit2 > _fitness {
+            self.lambda *= lma_damping;
+        } else if fit2 < _fitness && fit2 < fit1 {
+            self.lambda /= lma_damping;
+            _params1_fit = _params2_fit;
+            _fitness = fit2;
+        } else if fit1 < _fitness {
+            _fitness = fit1;
+        }
+        if !_fitness.is_nan() && self.fitness > _fitness {
+            self.fitness = _fitness;
+            self.params = _params1_fit;
+        }
+        self.calibration_state = CalibratorState::EllipsoidFittingStep;
+        return self.calibration_state;
     }
 }
